@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 def interp1d(vH, order=2):
-    # vH : (batch, 1, len)
+    # vH : (batch, c, H)
 
     if order == 2:
         kernel = torch.tensor([[[1., 2., 1.]]]).to(vH)
@@ -14,7 +14,7 @@ def interp1d(vH, order=2):
     return  vh 
 
 def restrict1d(vh, order=2):
-    # vh : (batch, 1, len)
+    # vh : (batch, c, h)
     if order == 2:
         kernel = torch.tensor([[[1., 2., 1.]]]).to(vh)
         w = 1/4
@@ -22,6 +22,27 @@ def restrict1d(vh, order=2):
 
     vH = w * F.conv1d(vh, kernel, stride=s)
     return vH
+
+def interp1d_cols(KhH, order=2):
+    # KhH : (batch, c, i, J)
+
+    bsz, c, i, J = KhH.shape
+    KhH = rearrange(KhH, 'b c i J -> (b i) c J')
+    Khh = interp1d(KhH, order=order)
+    Khh = rearrange(Khh, '(b i) c j-> b c i j', b = bsz, c=c, i=i, j=2*J+1)
+
+    return Khh
+
+def interp1d_rows(KHh, order=2):
+    # KhH : (batch, c, H, h)
+
+    KhH = rearrange(KHh, 'b c I j -> b c j I')
+    Khh = interp1d_cols(KhH, order)
+    Khh = rearrange(Khh, 'b c j i -> b c i j')
+
+    return Khh
+
+
 
 if __name__ == '__main__':
 
