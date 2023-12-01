@@ -34,6 +34,9 @@ def calculate_kernel_band_diff(KHH, Khh, band_idx, order=2):
     Khh_even_interp = interp1d_cols(KHH, order=order)
     Khh_interp = interp1d_rows(Khh[:,:,1::2], order=order)    
     Khh_interp[:,:,1::2] = Khh_even_interp
+
+    # Khh_interp = interp1d_rows(Khh_even_interp, order=order)
+
     Khh_interp_pad = F.pad(Khh_interp, (1,1,1,1))
 
     # diff on band
