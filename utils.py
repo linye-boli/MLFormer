@@ -1,7 +1,31 @@
+import os 
 import numpy as np
 import torch 
 import torch.nn.functional as F
 from einops import rearrange, repeat
+import pandas as pd
+
+def injection2d(Khh):
+    KhH = torch.cat([Khh[...,[0]], Khh[...,1:-1][...,1::2], Khh[...,[-1]]], axis=-1)
+    KHH = torch.cat([KhH[...,[0],:], KhH[...,1:-1,:][...,1::2,:], KhH[...,[-1],:]], axis=-2)
+    return KHH
+
+def injection1d_cols(Khh):
+    KhH = torch.cat([Khh[...,[0]], Khh[...,1:-1][...,1::2], Khh[...,[-1]]], axis=-1)
+    return KhH
+
+def injection1d_rows(Khh):
+    # KhH : (batch, c, H, h)
+
+    Khh = rearrange(Khh, 'b c I j -> b c j I')
+    KHh = injection1d_cols(Khh)
+    KHh = rearrange(KHh, 'b c j i -> b c i j')
+
+    return KHh
+
+def injection1d(vh):
+    vH = torch.cat([vh[...,[0]], vh[...,1:-1][...,1::2], vh[...,[-1]]], axis=-1)
+    return vH
 
 def interp1d_mat(n, order=2):
     if order == 2:
@@ -43,7 +67,6 @@ def restrict1d_matmul(vh, restrictmat=None, order=2):
         restrictmat = restrict1d_mat((n-1)//2, order)
     return torch.einsum('mn, bcn->bcm', restrictmat, vh)
 
-
 def interp1d(vH, order=2):
     # vH : (batch, c, H)
 
@@ -65,11 +88,12 @@ def interp1d(vH, order=2):
         s = 2 
         p = 4
     
-    vh = w * F.conv_transpose1d(vH, kernel, stride=s, padding=p)
+    vh = w * F.conv_transpose1d(vH, kernel, stride=s, padding=p)[..., 1:-1]
     return  vh 
 
 def restrict1d(vh, order=2):
     # vh : (batch, c, h)
+
     if order == 2:
         kernel = torch.tensor([[[1., 2., 1.]]]).to(vh)
         w = 1/4
@@ -87,9 +111,9 @@ def restrict1d(vh, order=2):
         w = 1/512
         s = 2
         p = 4
-    
 
-    vH = w * F.conv1d(vh, kernel, stride=s, padding=p)
+    vH = w * F.conv1d(vh[...,1:-1], kernel, stride=s, padding=p)
+    vH = torch.cat([vh[...,[0]], vH, vh[...,[-1]]], axis=-1)
     return vH
 
 def interp1d_cols(KhH, order=2):
@@ -98,7 +122,7 @@ def interp1d_cols(KhH, order=2):
     bsz, c, i, J = KhH.shape
     KhH = rearrange(KhH, 'b c i J -> (b i) c J')
     Khh = interp1d(KhH, order=order)
-    Khh = rearrange(Khh, '(b i) c j-> b c i j', b = bsz, c=c, i=i, j=2*J+1)
+    Khh = rearrange(Khh, '(b i) c j-> b c i j', b = bsz, c=c, i=i, j=2*J-1)
 
     return Khh
 
@@ -117,55 +141,54 @@ def multi_summation(K, u, h):
     # h : float scalar
     return h * torch.einsum('bcmn, bcn-> bcm', K, u)
 
-def L1Norm(est, ref):
-    b, c, n = est.shape
-    return (est - ref).abs().sum().item()/(n+1)/b
+def l1_norm(est, ref):
+    if len(est.shape) == 2:
+        b, n = est.shape 
+    elif len(est.shape) == 3:
+        b, c, n = est.shape 
+    return ((est - ref).abs().sum(axis=-1)/(n+2)).mean() # here n+2 indicates i=0,1,2,...2^13
+    
+def rl2_error(est, ref):
+    if len(est.shape) == 2:
+        b, n = est.shape 
+    elif len(est.shape) == 3:
+        b, c, n = est.shape 
+    return ((((est - ref)**2).sum(axis=-1))**0.5 / ((ref**2).sum(axis=-1))**0.5).mean()
 
-class LpLoss(object):
-    def __init__(self, d=2, p=2, size_average=True, reduction=True):
-        super(LpLoss, self).__init__()
+def matrl2_error(est, ref):
+    est = est.reshape(1,-1)
+    ref = ref.reshape(1,-1)
+    return rl2_error(est, ref)
 
-        #Dimension and Lp-norm type are postive
-        assert d > 0 and p > 0
+def ml_rl2_error(est, ref, k, order=2):
+    est = est[::-1]
+    for i in range(k+1):
+        if i == 0:
+            rl2 = rl2_error(est[i], ref)
+        else:
+            ref = restrict1d(ref, order=order)
+            rl2 += rl2_error(est[i], ref)
+    return rl2
 
-        self.d = d
-        self.p = p
-        self.reduction = reduction
-        self.size_average = size_average
+def init_records(task_nm, log_root, model_nm):
+    exp_root = os.path.join(log_root, task_nm, model_nm)
+    os.makedirs(exp_root, exist_ok=True)
 
-    def abs(self, x, y):
-        num_examples = x.size()[0]
+    hist_outpath = os.path.join(exp_root, 'hist.csv')
+    pred_outpath = os.path.join(exp_root, 'pred.csv')
+    model_outpath = os.path.join(exp_root, 'model.pth')
+    return hist_outpath, pred_outpath, model_outpath
 
-        #Assume uniform mesh
-        h = 1.0 / (x.size()[1] - 1.0)
+def save_hist(hist_outpath, train_hist, test_hist):
+    log_df = pd.DataFrame({'train_rl2': train_hist, 'test_rl2': test_hist})
+    log_df.to_csv(hist_outpath, index=False)
+    print('save train-test log at : ', hist_outpath)
 
-        all_norms = (h**(self.d/self.p))*torch.norm(x.view(num_examples,-1) - y.view(num_examples,-1), self.p, 1)
-
-        if self.reduction:
-            if self.size_average:
-                return torch.mean(all_norms)
-            else:
-                return torch.sum(all_norms)
-
-        return all_norms
-
-    def rel(self, x, y):
-        num_examples = x.size()[0]
-
-        diff_norms = torch.norm(x.reshape(num_examples,-1) - y.reshape(num_examples,-1), self.p, 1)
-        y_norms = torch.norm(y.reshape(num_examples,-1), self.p, 1)
-
-        if self.reduction:
-            if self.size_average:
-                return torch.mean(diff_norms/y_norms)
-            else:
-                return torch.sum(diff_norms/y_norms)
-
-        return diff_norms/y_norms
-
-    def __call__(self, x, y):
-        return self.rel(x, y)
-
+def save_preds(pred_outpath, preds):
+    preds = np.array(preds)
+    preds = rearrange(preds, 'n b l -> (n b) l')
+    np.savetxt(pred_outpath, preds, delimiter=',')
+    print('save test predictions at : ', pred_outpath)
 
 if __name__ == '__main__':
 
@@ -196,22 +219,22 @@ if __name__ == '__main__':
     vH_ord6_mat = restrict1d_matmul(vh, order=6)
 
     print('deconv interp error(L1Norm) : ')
-    print('ord2 : ', L1Norm(vh_ord2,vh))
-    print('ord4 : ', L1Norm(vh_ord4,vh))
-    print('ord6 : ', L1Norm(vh_ord6,vh))
+    print('ord2 : ', l1_norm(vh_ord2,vh))
+    print('ord4 : ', l1_norm(vh_ord4,vh))
+    print('ord6 : ', l1_norm(vh_ord6,vh))
     
     print('matmul interp error : ')
-    print('ord2 : ', L1Norm(vh_ord2_mat,vh))
-    print('ord4 : ', L1Norm(vh_ord4_mat,vh))
-    print('ord6 : ', L1Norm(vh_ord6_mat,vh))
+    print('ord2 : ', l1_norm(vh_ord2_mat,vh))
+    print('ord4 : ', l1_norm(vh_ord4_mat,vh))
+    print('ord6 : ', l1_norm(vh_ord6_mat,vh))
     
     print('conv restrict error : ')
-    print('ord2 : ', L1Norm(vH_ord2,vH))
-    print('ord4 : ', L1Norm(vH_ord4,vH))
-    print('ord6 : ', L1Norm(vH_ord6,vH))
+    print('ord2 : ', l1_norm(vH_ord2,vH))
+    print('ord4 : ', l1_norm(vH_ord4,vH))
+    print('ord6 : ', l1_norm(vH_ord6,vH))
     
     print('matmul restrict error : ')
-    print('ord2 : ', L1Norm(vH_ord2_mat,vH))
-    print('ord4 : ', L1Norm(vH_ord4_mat,vH))
-    print('ord6 : ', L1Norm(vH_ord6_mat,vH))
+    print('ord2 : ', l1_norm(vH_ord2_mat,vH))
+    print('ord4 : ', l1_norm(vH_ord4_mat,vH))
+    print('ord6 : ', l1_norm(vH_ord6_mat,vH))
     

@@ -1,67 +1,103 @@
+import scipy
 import torch 
 import numpy as np
+from einops import rearrange
 from utils import multi_summation
 
-def smooth_kernel_case(l):
-    n = 2**l - 1
-    xmin = 0
-    xmax = np.pi
-    h = (xmax - xmin)/(n+1)
-    xh = torch.linspace(xmin, xmax, n+2)[1:-1][None][None]
+def reference_test(l, kernel='cosine'):
+    # numerical kernel evaulation 
+    Khh, xh, h = numerical_kernel(l, kernel)
 
     # input function
-    uh = torch.sin(xh)**2
+    if kernel == 'cosine':
+        uh = torch.sin(xh)**2
+    elif kernel == 'lnabs':
+        uh = 1 - xh**2
 
-    # kernel function
-    gh_X, gh_Y = torch.meshgrid(xh[0,0], xh[0,0]) # mesh grid 
-    Khh = torch.cos(gh_Y - gh_X)[None][None]
+    elif kernel == 'laplace':
+        uh = -(xh - 0.5)**2
+    else:
+        uh = 1 - xh**2
 
     # numeric output function
     wh = multi_summation(Khh, uh, h)
 
-    # analytic output function
-    wh_gt = torch.sin(xh) * 4/3
-
+    if kernel == 'cosine':
+        # analytic output function
+        wh_gt = torch.sin(xh) * 4/3
+    elif kernel == 'laplace':
+        wh_gt = 1/12 * (xh**4 - 2*xh**3 + xh)
+    else:
+        wh_gt = None
+    
     return uh, Khh, h, wh, wh_gt, xh 
 
-def singular_smooth_kernel_case(l):
-    n = 2**l - 1
-    xmin = -1
-    xmax = 1
+
+def build_mesh1d(xmin, xmax, n):
     h = (xmax - xmin)/(n+1)
-    xh = torch.linspace(xmin, xmax, n+2)[1:-1][None][None]
+    xh = torch.linspace(xmin, xmax, n+2)
+    gh_X, gh_Y = torch.meshgrid(xh, xh, indexing="ij") # mesh grid 
+    return h, xh, gh_X, gh_Y
 
-    # input function
-    uh = 1 - xh**2
-
-    # kernel function
-    gh_X, gh_Y = torch.meshgrid(xh[0,0], xh[0,0]) # mesh grid 
-    Khh = torch.log((gh_Y - gh_X).abs())
-    Khh = torch.nan_to_num(Khh, neginf=-100.)[None][None]
-
-    # numeric output function
-    wh = multi_summation(Khh, uh, h)
-
-    return uh, Khh, h, wh, xh 
-
-def poisson_green_case(l):
+def numerical_kernel(l, kernel_type='cosine'):
     n = 2**l - 1
-    xmin = 0
-    xmax = 1
-    h = (xmax - xmin)/(n+1)
-    xh = torch.linspace(xmin, xmax, n+2)[1:-1][None][None]
 
-    # input function
-    uh = -(xh - 0.5)**2 + 0.25
+    if kernel_type == 'cosine':
+        h, xh, gh_X, gh_Y = build_mesh1d(0, np.pi, n)
+        Khh = torch.cos(gh_Y - gh_X)
+    elif kernel_type == 'lnabs':
+        h, xh, gh_X, gh_Y = build_mesh1d(-1, 1, n)
+        Khh = torch.log((gh_Y - gh_X).abs())
+        Khh = torch.nan_to_num(Khh, neginf=-1e3)
+    elif kernel_type == 'laplace':
+        h, xh, x, y = build_mesh1d(0, 1, n)
+        Khh = x*(1-y)*(x<=y) + y*(1-x)*(x>y)
+    elif kernel_type == 'advection_diffusion':
+        h, xh, x, y = build_mesh1d(0, 1, n)
+        Khh = 4*np.exp(-2*(x-y))*((y-1)*x*(x<=y)+(x-1)*y*(x>y))
+    elif kernel_type == 'helmholtz':
+        h, xh, x, y = build_mesh1d(0, 1, n)
+        Khh = (15*np.sin(15))**(-1)*np.sin(15*x)*np.sin(15*(y-1))*(x<=y)+(15*np.sin(15))**(-1)*np.sin(15*y)*np.sin(15*(x-1))*(x>y)
+    elif kernel_type == 'negative_helmholtz':
+        h, xh, x, y = build_mesh1d(0, 1, n)
+        Khh = (8*np.sinh(8))**(-1)*np.sinh(8*x)*np.sinh(8*(y-1))*(x<=y) + (8*np.sinh(8))**(-1)*np.sinh(8*y)*np.sinh(8*(x-1))*(x>y)
 
-    # kernel function
-    gh_X, gh_Y = torch.meshgrid(xh[0,0], xh[0,0]) # mesh grid 
-    Khh = (0.5 * (gh_Y + gh_X - (gh_Y - gh_X).abs()) - gh_Y * gh_X)[None][None]
+    return Khh[None][None], xh[None][None], h
 
-    # numeric output function
-    wh = multi_summation(Khh, uh, h)
+def load_dataset_1d(kernel, upath, wpath, ntrain=1000, ntest=200, bsz=64, norm_type='wmax', odd=True):
 
-    # analytic output function
-    wh_gt = 1/12 * (xh**4 - 2*xh**3 + xh)
+    if odd:
+        us = scipy.io.loadmat(upath)['f']
+        ws = np.load(wpath)
+    else:
+        us = scipy.io.loadmat(upath)['f'][:,1:]
+        ws = np.load(wpath)
+        ws = np.c_[ws, ws[:,[-1]]]
+    
+    if norm_type == 'wmax':
+        scale = np.abs(ws).max()
+        us = us / scale 
+        ws = ws / scale
+    elif norm_type == 'st':
+        us = (us - us.mean())/(us.std())
+        ws = (ws - ws.mean())/(ws.std())
+        
+    us = rearrange(us, 'b n -> b 1 n')
+    ws = rearrange(ws, 'b n -> b 1 n')
 
-    return uh, Khh, h, wh, wh_gt, xh 
+    us = torch.tensor(us).float()
+    ws = torch.tensor(ws).float()
+
+    us_train = us[:ntrain]
+    us_test = us[-ntest:]
+    ws_train = ws[:ntrain]
+    ws_test = ws[-ntest:]
+    
+    train_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(us_train, ws_train), batch_size=bsz, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(us_test, ws_test), batch_size=bsz, shuffle=False)
+
+    Khh, xh, h = numerical_kernel(13, kernel_type=kernel)
+
+    return train_loader, test_loader, Khh, xh, h
