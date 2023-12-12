@@ -5,6 +5,14 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 import pandas as pd
 
+def mlgrid1d(xh, k):
+    xh_ml = [xh]
+    for _ in range(k):
+        xh = injection1d(xh)
+        xh_ml.append(xh)
+        
+    return xh_ml[::-1]
+
 def injection2d(Khh):
     KhH = torch.cat([Khh[...,[0]], Khh[...,1:-1][...,1::2], Khh[...,[-1]]], axis=-1)
     KHH = torch.cat([KhH[...,[0],:], KhH[...,1:-1,:][...,1::2,:], KhH[...,[-1],:]], axis=-2)
@@ -139,7 +147,15 @@ def multi_summation(K, u, h):
     # KHH : (batch, c, m, n)
     # u : (batch, c, n)
     # h : float scalar
+
     return h * torch.einsum('bcmn, bcn-> bcm', K, u)
+    
+def numeric_integ(K, u, h):
+    # KHH : (batch, c, m, n)
+    # u : (batch, c, n)
+    # h : float scalar
+    
+    return h * torch.einsum('bcmn, bcn-> bcm', K[:,:,:,1:-1], u[:,:,1:-1]) + h/2 * torch.einsum('bcmn, bcn-> bcm', K[:,:,:,[0]], u[:,:,[0]]) + h/2 * torch.einsum('bcmn, bcn-> bcm', K[:,:,:,[-1]], u[:,:,[-1]])
 
 def l1_norm(est, ref):
     if len(est.shape) == 2:

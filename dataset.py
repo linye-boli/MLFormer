@@ -1,8 +1,9 @@
+import os
 import scipy
 import torch 
 import numpy as np
 from einops import rearrange
-from utils import multi_summation
+from utils import multi_summation, numeric_integ
 
 def reference_test(l, kernel='cosine'):
     # numerical kernel evaulation 
@@ -12,7 +13,7 @@ def reference_test(l, kernel='cosine'):
     if kernel == 'cosine':
         uh = torch.sin(xh)**2
     elif kernel == 'lnabs':
-        uh = 1 - xh**2
+        uh = 1 - xh**2 + torch.sin(xh)**2 +100 + torch.exp(xh)
 
     elif kernel == 'laplace':
         uh = -(xh - 0.5)**2
@@ -21,6 +22,7 @@ def reference_test(l, kernel='cosine'):
 
     # numeric output function
     wh = multi_summation(Khh, uh, h)
+    # wh = numeric_integ(Khh, uh, h)
 
     if kernel == 'cosine':
         # analytic output function
@@ -48,7 +50,7 @@ def numerical_kernel(l, kernel_type='cosine'):
     elif kernel_type == 'lnabs':
         h, xh, gh_X, gh_Y = build_mesh1d(-1, 1, n)
         Khh = torch.log((gh_Y - gh_X).abs())
-        Khh = torch.nan_to_num(Khh, neginf=-1e3)
+        Khh = torch.nan_to_num(Khh, neginf=-1e2)
     elif kernel_type == 'laplace':
         h, xh, x, y = build_mesh1d(0, 1, n)
         Khh = x*(1-y)*(x<=y) + y*(1-x)*(x>y)
@@ -64,26 +66,26 @@ def numerical_kernel(l, kernel_type='cosine'):
 
     return Khh[None][None], xh[None][None], h
 
-def load_dataset_1d(kernel, upath, wpath, ntrain=1000, ntest=200, bsz=64, norm_type='wmax', odd=True):
+def load_dataset_1d(kernel, data_root, ntrain=1000, ntest=200, bsz=64, odd=True):
+
+    data_path = os.path.join(data_root, kernel+'.mat')
+    raw_data = scipy.io.loadmat(data_path)
 
     if odd:
-        us = scipy.io.loadmat(upath)['f']
-        ws = np.load(wpath)
+        F = raw_data['F']
+        U = raw_data['U']
+        U_hom = raw_data['U_hom']
     else:
-        us = scipy.io.loadmat(upath)['f'][:,1:]
-        ws = np.load(wpath)
-        ws = np.c_[ws, ws[:,[-1]]]
+        F = raw_data['F'][1:]
+        U = raw_data['U'][1:]
+        U_hom = raw_data['U_hom'][1:]
     
-    if norm_type == 'wmax':
-        scale = np.abs(ws).max()
-        us = us / scale 
-        ws = ws / scale
-    elif norm_type == 'st':
-        us = (us - us.mean())/(us.std())
-        ws = (ws - ws.mean())/(ws.std())
+    if U_hom.sum() == 0:
+        F = F / U.max()
+        U = U / U.max()
         
-    us = rearrange(us, 'b n -> b 1 n')
-    ws = rearrange(ws, 'b n -> b 1 n')
+    us = rearrange(F, 'n b -> b 1 n')
+    ws = rearrange(U, 'n b-> b 1 n')
 
     us = torch.tensor(us).float()
     ws = torch.tensor(ws).float()
@@ -98,6 +100,16 @@ def load_dataset_1d(kernel, upath, wpath, ntrain=1000, ntest=200, bsz=64, norm_t
     test_loader = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(us_test, ws_test), batch_size=bsz, shuffle=False)
 
-    Khh, xh, h = numerical_kernel(13, kernel_type=kernel)
+    xh, yh = raw_data['X'], raw_data['Y']
+    x, y = np.meshgrid(xh, yh)
+    grid_pts = np.concatenate([[x], [y]])
+    grid_pts = rearrange(grid_pts, 'c m n -> m n c')
+    grid_pts = torch.tensor(grid_pts).float()
+    h = 2**(-13)
 
-    return train_loader, test_loader, Khh, xh, h
+    if 'ExactGreen' in raw_data.keys():
+        Khh = torch.tensor(eval(raw_data['ExactGreen'][0]).T).float()[None,None]
+    else:
+        Khh = None
+
+    return train_loader, test_loader, Khh, U_hom, xh, grid_pts, h
