@@ -1,6 +1,7 @@
 import sys 
 sys.path.append('../')
 
+from datetime import datetime
 from einops import rearrange
 import torch 
 from utils import rl2_error, matrl2_error, init_records, save_hist, save_preds, multi_summation
@@ -8,6 +9,7 @@ from dataset import load_dataset_1d
 from tqdm import trange
 import argparse
 from model import MLP, Rational
+import json 
 
 if __name__ == '__main__':
 
@@ -17,34 +19,50 @@ if __name__ == '__main__':
                         help='device id.')
     parser.add_argument('--task', type=str, default='cosine',
                         help='dataset name. (laplace, cosine, logarithm)')
-    parser.add_argument('--epochs', type=int, default=200,
-                        help='number of epochs to train.')
+    parser.add_argument('--epochs_adam', type=int, default=400,
+                        help='epochs for train with adam.')
+    parser.add_argument('--lr_adam', type=float, default=1e-3,
+                        help='learning rate of adam optimizer')
+    parser.add_argument('--epochs_lbfgs', type=int, default=20,
+                        help='epochs for train with lbfgs.')
+    parser.add_argument('--lr_lbfgs', type=float, default=1e-2,
+                        help='learning rate of lbfgs optimizer')
+    parser.add_argument('--bsz', type=int, default=20,
+                        help='training batch size')
     args = parser.parse_args()
 
     ################################################################
     #  configurations
     ################################################################
     
-    batch_size = 20
-    lr_adam = 1e-3
-    # lr_lbfgs = 1e-2/ # cosine/laplace
-    lr_lbfgs = 1e-2 # laplace
-    # logarithm
-    
-    epochs = args.epochs
+    batch_size = args.bsz
+    lr_adam = args.lr_adam
+    lr_lbfgs = args.lr_lbfgs
+    epochs_adam = args.epochs_adam
+    epochs_lbfgs = args.epochs_lbfgs
+    epochs = epochs_adam + epochs_lbfgs
+    mlp_layers = [2, 50, 50, 50, 50, 1]
 
+    now = datetime.now()
+    exp_nm = now.strftime("exp-%Y-%m-%d-%H-%M-%S")
     device = torch.device(f'cuda:{args.device}')
-    # device = torch.device(f'cpu')
     data_root = '/workdir/pde_data/green_learning/data1d_8193/'
     log_root = '/workdir/MLFormer/results/'
     task_nm = args.task
     model_nm = f'GL'
-    hist_outpath, pred_outpath, model_operator_outpath, model_kernel_outpath = init_records(task_nm, log_root, model_nm)
+    hist_outpath, pred_outpath, model_operator_outpath, model_kernel_outpath, cfg_outpath = init_records(
+        task_nm, log_root, model_nm, exp_nm)
     print('output files:')
     print(hist_outpath)
     print(pred_outpath)
     print(model_operator_outpath)
     print(model_kernel_outpath)
+    print(cfg_outpath)
+
+    with open(cfg_outpath, 'w') as f:
+        cfg_dict = vars(args)
+        cfg_dict['mlp'] = mlp_layers
+        json.dump(cfg_dict, f)
     
     ################################################################
     # read data
@@ -52,7 +70,7 @@ if __name__ == '__main__':
     train_loader, test_loader, Khh, w_hom, xh, grid_pts, h = load_dataset_1d(task_nm, data_root, bsz=batch_size)
     grid_pts = grid_pts.to(device)
     Khh = Khh.to(device)
-    glnet = MLP([2, 50, 50, 50, 50, 1], Rational).to(device)
+    glnet = MLP(mlp_layers, Rational).to(device)
 
     ################################################################
     # training and evaluation
@@ -82,7 +100,7 @@ if __name__ == '__main__':
             rnd_rows = torch.randint(low=0, high=2**13+1, size=(16,)).to(device)
             w_rows = w[:,:,rnd_rows]
 
-            if ep < 400:
+            if ep <= epochs_adam:
                 Khh_rows = glnet(grid_pts[rnd_rows])
                 Khh_rows = rearrange(Khh_rows, 'm n c->1 c m n').repeat(bsz, 1, 1, 1)
                 w_rows_ = multi_summation(Khh_rows, u, h)
@@ -91,8 +109,6 @@ if __name__ == '__main__':
                 loss.backward()
                 opt_adam.step()
             else:
-                # rnd_rows = torch.randint(low=0, high=2**13+1, size=(16,)).to(device)
-                # w_rows = w[:,:,rnd_rows]
                 def loss_closure():
                     Khh_rows = glnet(grid_pts[rnd_rows])
                     Khh_rows = rearrange(Khh_rows, 'm n c->1 c m n').repeat(bsz, 1, 1, 1)
@@ -101,7 +117,6 @@ if __name__ == '__main__':
                     opt_lbfgs.zero_grad()
                     loss.backward()
                     return loss
-                # torch.nn.utils.clip_grad_norm_(glnet.parameters(), 0.1)
                 opt_lbfgs.step(loss_closure)
                 Khh_rows = glnet(grid_pts[rnd_rows])
                 Khh_rows = rearrange(Khh_rows, 'm n c->1 c m n').repeat(bsz, 1, 1, 1)
