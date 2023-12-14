@@ -195,16 +195,17 @@ def ml_rl2_error(est, ref, k, order=2):
             rl2 += rl2_error(est[i], ref)
     return rl2
 
-def init_records(task_nm, log_root, model_nm):
-    exp_root = os.path.join(log_root, task_nm, model_nm)
+def init_records(task_nm, log_root, model_nm, exp_nm):
+    exp_root = os.path.join(log_root, task_nm, model_nm, exp_nm)
     os.makedirs(exp_root, exist_ok=True)
 
     hist_outpath = os.path.join(exp_root, 'hist.csv')
     pred_outpath = os.path.join(exp_root, 'pred.csv')
     model_operator_outpath = os.path.join(exp_root, 'model_best_operator.pth')
     model_kernel_outpath = os.path.join(exp_root, 'model_best_kernel.pth')
+    cfg_outpath = os.path.join(exp_root, 'cfg.json')    
     
-    return hist_outpath, pred_outpath, model_operator_outpath, model_kernel_outpath
+    return hist_outpath, pred_outpath, model_operator_outpath, model_kernel_outpath, cfg_outpath
 
 def save_hist(hist_outpath, train_hist, test_hist, kernel_hist=None):
     if kernel_hist is None:

@@ -8,6 +8,8 @@ from tqdm import trange
 import argparse
 from model import NMLK
 from mlmm import SingularSmoothKernelMLMM_local, SingularSmoothKernelReconstruction
+from datetime import datetime
+import json
 
 if __name__ == '__main__':
 
@@ -17,36 +19,64 @@ if __name__ == '__main__':
                         help='device id.')
     parser.add_argument('--task', type=str, default='cosine',
                         help='dataset name. (burgers, poisson, cosine, lnabs)')
-    parser.add_argument('--epochs', type=int, default=200,
-                        help='number of epochs to train.')
+    parser.add_argument('--epochs_adam', type=int, default=400,
+                        help='epochs for train with adam.')
+    parser.add_argument('--lr_adam', type=float, default=1e-3,
+                        help='learning rate of adam optimizer')
+    parser.add_argument('--epochs_lbfgs', type=int, default=20,
+                        help='epochs for train with lbfgs.')
+    parser.add_argument('--lr_lbfgs', type=float, default=1e-2,
+                        help='learning rate of lbfgs optimizer')
+    parser.add_argument('--bsz', type=int, default=20,
+                        help='training batch size')
+    parser.add_argument('--l', type=int, default=13,
+                        help='2**l+1 is total number of points')
+    parser.add_argument('--k', type=int, default=5,
+                        help='coarest level is l - k')
+    parser.add_argument('--m', type=int, default=3,
+                        help='neighborhood width')
+    parser.add_argument('--ord', type=int, default=2,
+                        help='interpolation order')
+    
     args = parser.parse_args()
 
     ################################################################
     #  configurations
     ################################################################
     
-    batch_size = 20
-    lr_adam = 1e-3
-    lr_lbfgs = 1e-2
+    batch_size = args.bsz
+    lr_adam = args.lr_adam
+    lr_lbfgs = args.lr_lbfgs
+    epochs_adam = args.epochs_adam
+    epochs_lbfgs = args.epochs_lbfgs
+    epochs = epochs_adam + epochs_lbfgs
+    
+    l = args.l
+    k = args.k 
+    m = args.m
+    order = args.ord
+    mlp_layers = [2, 50, 50, 1]
 
-    l = 13
-    k = 5
-    m = 3
-    order = 2
-
-    epochs = args.epochs
-
+    now = datetime.now()
+    exp_nm = now.strftime("exp-%Y-%m-%d-%H-%M-%S")
     device = torch.device(f'cuda:{args.device}')
     data_root = '/workdir/pde_data/green_learning/data1d_8193/'
     log_root = '/workdir/MLFormer/results/'
     task_nm = args.task
     model_nm = f'NMLK'
-    hist_outpath, pred_outpath, model_operator_outpath, model_kernel_outpath = init_records(task_nm, log_root, model_nm)
+    hist_outpath, pred_outpath, model_operator_outpath, model_kernel_outpath, cfg_outpath = init_records(
+        task_nm, log_root, model_nm, exp_nm)
     print('output files:')
     print(hist_outpath)
     print(pred_outpath)
     print(model_operator_outpath)
     print(model_kernel_outpath)
+    print(cfg_outpath)
+
+    with open(cfg_outpath, 'w') as f:
+        cfg_dict = vars(args)
+        cfg_dict['mlp'] = mlp_layers
+        json.dump(cfg_dict, f)
 
     ################################################################
     # read data
@@ -59,7 +89,7 @@ if __name__ == '__main__':
 
     grid_pts = grid_pts.to(device)
     Khh = Khh.to(device)
-    nmlk = NMLK([2, 50, 50, 1], l=l, k=k, m=m, order=order).to(device)
+    nmlk = NMLK(mlp_layers, l=l, k=k, m=m, order=order).to(device)
     nmlk.idx_j_lst = [x.to(device) for x in nmlk.idx_j_lst]
 
     ################################################################
@@ -87,7 +117,7 @@ if __name__ == '__main__':
             rnd_rows = torch.randint(low=0, high=2**13+1, size=(16,)).to(device)
             w_rows = w[:,:,rnd_rows]
 
-            if ep < 400:
+            if ep <= epochs_adam:
                 nKHH, nKhh_banddiff_lst = nmlk(x, x_nbrs)
                 nKhh = SingularSmoothKernelReconstruction(nKHH, nKhh_banddiff_lst, l, k, m)
                 w_rows_ = multi_summation(nKhh[:,:,rnd_rows].repeat(bsz, 1, 1, 1), u, h)
