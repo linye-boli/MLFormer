@@ -13,6 +13,15 @@ def mlgrid1d(xh, k):
         
     return xh_ml[::-1]
 
+def mlgrid2d(ghh, k):
+    ghh_ml = [ghh]
+    for _ in range(k):
+        ghH = injection1d_cols(ghh)
+        ghh = injection1d_rows(ghH)
+        ghh_ml.append(ghh)
+    
+    return ghh_ml[::-1]
+
 def injection2d(Khh):
     KhH = torch.cat([Khh[...,[0]], Khh[...,1:-1][...,1::2], Khh[...,[-1]]], axis=-1)
     KHH = torch.cat([KhH[...,[0],:], KhH[...,1:-1,:][...,1::2,:], KhH[...,[-1],:]], axis=-2)
@@ -192,11 +201,16 @@ def init_records(task_nm, log_root, model_nm):
 
     hist_outpath = os.path.join(exp_root, 'hist.csv')
     pred_outpath = os.path.join(exp_root, 'pred.csv')
-    model_outpath = os.path.join(exp_root, 'model.pth')
-    return hist_outpath, pred_outpath, model_outpath
+    model_operator_outpath = os.path.join(exp_root, 'model_best_operator.pth')
+    model_kernel_outpath = os.path.join(exp_root, 'model_best_kernel.pth')
+    
+    return hist_outpath, pred_outpath, model_operator_outpath, model_kernel_outpath
 
-def save_hist(hist_outpath, train_hist, test_hist):
-    log_df = pd.DataFrame({'train_rl2': train_hist, 'test_rl2': test_hist})
+def save_hist(hist_outpath, train_hist, test_hist, kernel_hist=None):
+    if kernel_hist is None:
+        log_df = pd.DataFrame({'train_rl2': train_hist, 'test_rl2': test_hist})
+    else:
+        log_df = pd.DataFrame({'train_rl2': train_hist, 'test_rl2': test_hist, 'test_matrl2': kernel_hist})
     log_df.to_csv(hist_outpath, index=False)
     print('save train-test log at : ', hist_outpath)
 

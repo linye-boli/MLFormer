@@ -152,6 +152,7 @@ def SingularSmoothKernelMLMM_local(uh, Khh, h, k=3, order=2, m=7):
         lb_lst.append(w_lb)
         rb_lst.append(w_rb)
 
+
         # evaluate kernel function on coarse grid
         KHh = injection1d_rows(Khh) 
         KHH = injection1d_cols(KHh)
@@ -220,7 +221,7 @@ def SmoothKernelReconstruction(KHH, l, k):
     assert Khh.shape[-1] == 2**l+1
     return Khh_lst
 
-def SingularSmoothKernelReconstruction(KHH, Khh_banddiff_lst, l, k, m):
+def SingularSmoothKernelReconstruction(KHH, Khh_banddiff_lst, l, k, m, is_lst=False):
     idx_i_lst = []
     idx_j_lst = []
 
@@ -244,7 +245,10 @@ def SingularSmoothKernelReconstruction(KHH, Khh_banddiff_lst, l, k, m):
         Khh[:,:,idx_i_lst[i][1::2], idx_j_lst[i][1::2]] += Khh_banddiff_lst[i][1]
         Khh_lst.append(Khh)
 
-    return Khh_lst
+    if is_lst:
+        return Khh_lst
+    else:
+        return Khh_lst[-1]
 
 if __name__ == '__main__':
 
